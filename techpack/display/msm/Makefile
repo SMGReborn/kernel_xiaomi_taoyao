@@ -148,7 +148,9 @@ msm_drm-$(CONFIG_DRM_MSM) += \
 	mi_disp/mi_dsi_display.o \
 	mi_disp/mi_dsi_panel.o \
 	mi_disp/mi_sde_connector.o \
-	mi_disp/mi_cooling_device.o
+	mi_disp/mi_cooling_device.o \
+	mi_disp/mi_disp_notifier.o \
+	mi_disp/mi_dsi_display.o
 
 msm_drm-$(CONFIG_MSM_SDE_ROTATOR) += ../rotator/sde_rotator_dev.o \
 	../rotator/sde_rotator_core.o \
