@@ -261,6 +261,9 @@ struct sde_encoder_virt {
 	struct cpumask valid_cpu_mask;
 	struct msm_mode_info mode_info;
 	bool delay_kickoff;
+	bool prepare_kickoff;
+	bool ready_kickoff;
+	bool autorefresh_solver_disable;
 };
 
 #define to_sde_encoder_virt(x) container_of(x, struct sde_encoder_virt, base)
