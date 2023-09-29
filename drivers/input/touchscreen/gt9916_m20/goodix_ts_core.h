@@ -52,7 +52,6 @@
 
 #define GOODIX_XIAOMI_TOUCHFEATURE
 #define GOODIX_DEBUGFS_ENABLE
-//#define CONFIG_TOUCH_BOOST
 
 #define GTP_RESULT_INVALID				0
 #define GTP_RESULT_FAIL					1
@@ -724,7 +723,5 @@ void inspect_module_exit(void);
 int goodix_tools_init(void);
 void goodix_tools_exit(void);
 int goodix_get_rawdata(struct device *dev, struct ts_rawdata_info *info);
-
-extern int mi_disp_set_fod_queue_work(u32 fod_btn, bool from_touch);
 
 #endif
