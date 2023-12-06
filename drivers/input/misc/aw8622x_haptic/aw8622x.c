@@ -122,7 +122,7 @@ static char aw8622x_rtp_name[][AW8622X_RTP_NAME_MAX] = {
 	{"NFC_card_rtp.bin"},
 	{"wakeup_voice_assistant_rtp.bin"},
 	{"NFC_card_slow_rtp.bin"},
-	{"POCO_RTP.bin"},	//99
+	{"aw8622x_rtp.bin"},	//99
 	{"aw8622x_rtp.bin"},	//100
 	{"offline_countdown_RTP.bin"},
 	{"scene_bomb_injury_RTP.bin"},
