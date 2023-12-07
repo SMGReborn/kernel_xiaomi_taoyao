@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -1837,13 +1837,6 @@ csr_check_band_freq_match(enum band_info band, uint32_t freq)
 		return true;
 
 	if (band == BAND_5G && WLAN_REG_IS_5GHZ_CH_FREQ(freq))
-		return true;
-
-	/*
-	 * Not adding the band check for now as band_info will be soon
-	 * replaced with reg_wifi_band enum
-	 */
-	if (WLAN_REG_IS_6GHZ_CHAN_FREQ(freq))
 		return true;
 
 	return false;
@@ -5035,16 +5028,10 @@ QDF_STATUS csr_roam_stop_network(struct mac_context *mac, uint32_t sessionId,
 				ssid_match = csr_is_ssid_equal(
 						mac, pSession->pConnectBssDesc,
 						bss_desc, pIes);
-			if (bss_desc && !ssid_match) {
-				csr_roam_issue_disassociate(mac,
-							    sessionId, substate,
-							    false);
-				status = QDF_STATUS_E_FAILURE;
-				qdf_mem_free(pBssConfig);
-
-				return status;
-
-			} else if (bss_desc) {
+			if (bss_desc && !ssid_match)
+				status = csr_roam_issue_disassociate(mac,
+						sessionId, substate, false);
+			else if (bss_desc)
 				/*
 				 * In an infra & going to an infra network with
 				 * the same SSID.  This calls for a reassoc seq.
@@ -5055,7 +5042,6 @@ QDF_STATUS csr_roam_stop_network(struct mac_context *mac, uint32_t sessionId,
 						mac, sessionId, roam_profile,
 						bss_desc, pBssConfig, pIes,
 						false);
-			}
 		} else if (bss_desc || CSR_IS_INFRA_AP(roam_profile)) {
 			/*
 			 * Not in Infra. We can go ahead and set
@@ -8718,60 +8704,35 @@ bool is_disconnect_pending(struct mac_context *pmac, uint8_t vdev_id)
 	return disconnect_cmd_exist;
 }
 
-bool is_any_other_vdev_connecting_disconnecting(struct mac_context *pmac,
-						uint8_t vdev_id)
+bool is_disconnect_pending_on_other_vdev(struct mac_context *pmac,
+					 uint8_t vdev_id)
 {
 	tListElem *entry = NULL;
 	tListElem *next_entry = NULL;
 	tSmeCmd *command = NULL;
-	bool is_pending_cmd = false;
-	enum QDF_OPMODE opmode;
+	bool disconnect_cmd_exist = false;
 
 	entry = csr_nonscan_pending_ll_peek_head(pmac, LL_ACCESS_NOLOCK);
 	while (entry) {
 		next_entry = csr_nonscan_pending_ll_next(pmac, entry,
 							 LL_ACCESS_NOLOCK);
 		command = GET_BASE_ADDR(entry, tSmeCmd, Link);
-		if (!command) {
-			entry = next_entry;
-			continue;
+		/*
+		 * check if any other vdev NB disconnect or SB disconnect
+		 * (eSmeCommandWmStatusChange) is pending
+		 */
+		if (command && (CSR_IS_DISCONNECT_COMMAND(command) ||
+		    command->command == eSmeCommandWmStatusChange) &&
+		    command->vdev_id != vdev_id) {
+			sme_debug("disconnect is pending on vdev:%d, cmd:%d",
+				  command->vdev_id, command->command);
+			disconnect_cmd_exist = true;
+			break;
 		}
-
-		opmode = wlan_get_opmode_from_vdev_id(pmac->pdev,
-						      command->vdev_id);
-
-		if (opmode == QDF_STA_MODE || opmode == QDF_P2P_CLIENT_MODE) {
-			/*
-			 * check if any other vdev NB disconnect or SB
-			 * disconnect (eSmeCommandWmStatusChange) is pending
-			 */
-			if ((CSR_IS_DISCONNECT_COMMAND(command) ||
-			    command->command == eSmeCommandWmStatusChange) &&
-			    command->vdev_id != vdev_id) {
-				sme_debug("disconnect is pending on vdev:%d, cmd:%d",
-					  command->vdev_id, command->command);
-				is_pending_cmd = true;
-				break;
-			}
-		}
-
-		if (opmode == QDF_SAP_MODE || opmode == QDF_P2P_GO_MODE) {
-			/* Check if START/STOP AP OP is in progress */
-			if ((command->command == eSmeCommandRoam &&
-			   (command->u.roamCmd.roamReason == eCsrStopBss ||
-			    command->u.roamCmd.roamReason == eCsrHddIssued))) {
-				sme_debug("vdev ops pending on vdev_id:%d, cmd:%d, reason:%d",
-					  command->vdev_id, command->command,
-					  command->u.roamCmd.roamReason);
-				is_pending_cmd = true;
-				break;
-			}
-		}
-
 		entry = next_entry;
 	}
 
-	return is_pending_cmd;
+	return disconnect_cmd_exist;
 }
 
 #if defined(WLAN_SAE_SINGLE_PMK) && defined(WLAN_FEATURE_ROAM_OFFLOAD)
@@ -8893,7 +8854,7 @@ static void csr_roam_join_rsp_processor(struct mac_context *mac,
 	struct csr_roam_connectedinfo *prev_connect_info;
 	struct wlan_crypto_pmksa *pmksa;
 	uint32_t len = 0, roamId = 0, reason_code = 0;
-	bool is_dis_pending, is_vdev_ops_pending_on_other_vdev;
+	bool is_dis_pending, is_dis_pending_on_other_vdev;
 	bool use_same_bss = false;
 	uint8_t max_retry_count = 1;
 	bool retry_same_bss = false;
@@ -8997,8 +8958,8 @@ static void csr_roam_join_rsp_processor(struct mac_context *mac,
 		 reason_code);
 
 	is_dis_pending = is_disconnect_pending(mac, session_ptr->sessionId);
-	is_vdev_ops_pending_on_other_vdev =
-		is_any_other_vdev_connecting_disconnecting(mac,
+	is_dis_pending_on_other_vdev =
+		is_disconnect_pending_on_other_vdev(mac,
 						    session_ptr->sessionId);
 	is_time_allowed =
 		csr_is_time_allowed_for_connect_attempt(pCommand,
@@ -9008,7 +8969,7 @@ static void csr_roam_join_rsp_processor(struct mac_context *mac,
 	 * if userspace has issued disconnection or we have reached mac tries or
 	 * max time, driver should not continue for next connection.
 	 */
-	if (is_dis_pending || is_vdev_ops_pending_on_other_vdev || !is_time_allowed ||
+	if (is_dis_pending || is_dis_pending_on_other_vdev || !is_time_allowed ||
 	    session_ptr->join_bssid_count >= CSR_MAX_BSSID_COUNT)
 		attempt_next_bss = false;
 
@@ -9124,8 +9085,8 @@ static void csr_roam_join_rsp_processor(struct mac_context *mac,
 	if (is_dis_pending)
 		sme_err("disconnect is pending, complete roam");
 
-	if (is_vdev_ops_pending_on_other_vdev)
-		sme_err("vdev ops is pending on other vdev, complete roam");
+	if (is_dis_pending_on_other_vdev)
+		sme_err("disconnect is pending on other vdev, complete roam");
 
 	if (!is_time_allowed)
 		sme_err("time can exceed the active timeout for connection attempt");
@@ -14958,7 +14919,7 @@ csr_update_sae_single_pmk_ap_cap(struct mac_context *mac,
 }
 #endif
 
-void csr_get_basic_rates(tSirMacRateSet *b_rates, uint32_t chan_freq)
+static void csr_get_basic_rates(tSirMacRateSet *b_rates, uint32_t chan_freq)
 {
 	/*
 	 * Some IOT APs don't send supported rates in
@@ -15745,17 +15706,6 @@ QDF_STATUS csr_send_join_req_msg(struct mac_context *mac, uint32_t sessionId,
 					       bss_freq,
 					       mac->mlme_cfg->ht_caps.
 					       ht_cap_info.adv_coding_cap);
-
-		if (pProfile->csrPersona == QDF_STA_MODE) {
-			if (pSession->ht_config.ht_sgi20)
-				pSession->ht_config.ht_sgi20 =
-					pIes->HTCaps.shortGI20MHz;
-
-			if (pSession->ht_config.ht_sgi40)
-				pSession->ht_config.ht_sgi40 =
-					pIes->HTCaps.shortGI40MHz;
-		}
-
 		csr_join_req->ht_config = pSession->ht_config;
 		csr_join_req->vht_config = pSession->vht_config;
 		sme_debug("ht capability 0x%x VHT capability 0x%x",
@@ -21049,21 +20999,17 @@ static bool csr_is_sae_single_pmk_vsie_ap(struct bss_description *bss_des)
  * @mac_ctx: mac context
  * @session: Session
  * @vdev_id: session id
- * @psk_pmk: pmk of roamed AP
- * @pmk_len: pmk length
  *
  * Return: True if same pmk IE is present
  */
 static void
 csr_check_and_set_sae_single_pmk_cap(struct mac_context *mac_ctx,
 				     struct csr_roam_session *session,
-				     uint8_t vdev_id, uint8_t *psk_pmk,
-				     uint8_t pmk_len)
+				     uint8_t vdev_id)
 {
 	struct wlan_objmgr_vdev *vdev;
 	struct mlme_pmk_info *pmk_info;
 	tPmkidCacheInfo *pmkid_cache;
-	struct wlan_crypto_pmksa *roam_sync_pmksa;
 	int32_t keymgmt;
 	bool val, lookup_success;
 
@@ -21088,28 +21034,9 @@ csr_check_and_set_sae_single_pmk_cap(struct mac_context *mac_ctx,
 		if (!val)
 			goto end;
 
-		roam_sync_pmksa = qdf_mem_malloc(sizeof(*roam_sync_pmksa));
-		if (roam_sync_pmksa) {
-			qdf_copy_macaddr(&roam_sync_pmksa->bssid,
-					 (struct qdf_mac_addr *)
-					 &session->pConnectBssDesc->bssId);
-			roam_sync_pmksa->single_pmk_supported = true;
-			roam_sync_pmksa->pmk_len = pmk_len;
-			qdf_mem_copy(roam_sync_pmksa->pmk, psk_pmk,
-				     roam_sync_pmksa->pmk_len);
-			sme_debug("SPMK received for " QDF_MAC_ADDR_FMT
-				  "pmk_len:%d", QDF_MAC_ADDR_REF(
-				  roam_sync_pmksa->bssid.bytes),
-				  roam_sync_pmksa->pmk_len);
-			/* update single pmk info for roamed ap to pmk table */
-			wlan_crypto_set_sae_single_pmk_info(vdev,
-							    roam_sync_pmksa);
-
-			qdf_mem_zero(roam_sync_pmksa, sizeof(*roam_sync_pmksa));
-			qdf_mem_free(roam_sync_pmksa);
-		} else {
-			goto end;
-		}
+		wlan_crypto_set_sae_single_pmk_bss_cap(vdev,
+		   (struct qdf_mac_addr *)session->pConnectBssDesc->bssId,
+		   true);
 
 		pmkid_cache = qdf_mem_malloc(sizeof(*pmkid_cache));
 		if (!pmkid_cache)
@@ -21162,8 +21089,7 @@ end:
 static inline void
 csr_check_and_set_sae_single_pmk_cap(struct mac_context *mac_ctx,
 				     struct csr_roam_session *session,
-				     uint8_t vdev_id, uint8_t *psk_pmk,
-				     uint8_t pmk_len)
+				     uint8_t vdev_id)
 {
 }
 #endif
@@ -21386,12 +21312,8 @@ csr_process_roam_sync_callback(struct mac_context *mac_ctx,
 			mac_ctx->psoc);
 		mac_ctx->sme.set_connection_info_cb(false);
 
-		if (roam_synch_data->pmk_len)
-			csr_check_and_set_sae_single_pmk_cap(
-						mac_ctx, session,
-						session_id,
-						roam_synch_data->pmk,
-						roam_synch_data->pmk_len);
+		csr_check_and_set_sae_single_pmk_cap(mac_ctx, session,
+						     session_id);
 
 		if (ucfg_pkt_capture_get_pktcap_mode(mac_ctx->psoc))
 			ucfg_pkt_capture_record_channel(vdev);
@@ -22015,128 +21937,6 @@ csr_roam_auth_offload_callback(struct mac_context *mac_ctx,
 
 	return status;
 
-}
-
-static
-void csr_inform_bcn_probe(struct mac_context *mac_ctx,
-			  uint8_t *frame, uint32_t len,
-			  qdf_freq_t freq)
-{
-	qdf_nbuf_t buf;
-	uint8_t *data, i;
-	struct mgmt_rx_event_params rx_param = {0};
-	struct wlan_frame_hdr *hdr;
-	enum mgmt_frame_type frm_type = MGMT_BEACON;
-
-	hdr = (struct wlan_frame_hdr *)frame;
-
-	if ((hdr->i_fc[0] & QDF_IEEE80211_FC0_SUBTYPE_MASK) ==
-	    MGMT_SUBTYPE_PROBE_RESP)
-		frm_type = MGMT_PROBE_RESP;
-
-	rx_param.pdev_id = 0;
-	rx_param.chan_freq = freq;
-	/* Real RSSI will be filled after roam sync */
-	rx_param.rssi = 0;
-
-	/* Set all per chain rssi as invalid */
-	for (i = 0; i < WLAN_MGMT_TXRX_HOST_MAX_ANTENNA; i++)
-		rx_param.rssi_ctl[i] = WLAN_INVALID_PER_CHAIN_RSSI;
-
-	buf = qdf_nbuf_alloc(NULL, qdf_roundup(len, 4), 0, 4, false);
-	if (!buf)
-		return;
-
-	qdf_nbuf_put_tail(buf, len);
-	qdf_nbuf_set_protocol(buf, ETH_P_CONTROL);
-
-	data = qdf_nbuf_data(buf);
-	qdf_mem_copy(data, frame, len);
-	/* buf will be freed by scan module in error or success case */
-	wlan_scan_process_bcn_probe_rx_sync(wlan_pdev_get_psoc(mac_ctx->pdev),
-					    buf, &rx_param, frm_type);
-}
-
-QDF_STATUS
-csr_roam_candidate_event_handle_callback(struct mac_context *mac_ctx,
-					 uint8_t *frame, uint32_t len)
-{
-	uint32_t ie_offset, ie_len;
-	uint8_t *ie_ptr = NULL;
-	uint8_t *extracted_ie = NULL;
-	uint8_t primary_channel, band;
-	qdf_freq_t op_freq;
-
-	QDF_TRACE_HEX_DUMP(QDF_MODULE_ID_MLME, QDF_TRACE_LEVEL_DEBUG,
-			   frame, len);
-
-	/* Fixed parameters offset */
-	ie_offset = sizeof(struct wlan_frame_hdr) + SIR_MAC_B_PR_SSID_OFFSET;
-
-	if (len <= ie_offset) {
-		mlme_err("Invalid frame length");
-		return QDF_STATUS_E_FAILURE;
-	}
-
-	ie_ptr = frame + ie_offset;
-	ie_len = len - ie_offset;
-
-	/* For 2.4GHz,5GHz get channel from DS IE */
-	extracted_ie = (uint8_t *)wlan_get_ie_ptr_from_eid(WLAN_ELEMID_DSPARMS,
-							   ie_ptr, ie_len);
-
-	if (extracted_ie && extracted_ie[0] == WLAN_ELEMID_DSPARMS &&
-	    extracted_ie[1] == WLAN_DS_PARAM_IE_MAX_LEN) {
-		band = BIT(REG_BAND_2G) | BIT(REG_BAND_5G);
-		primary_channel = *(extracted_ie + 2);
-		sme_debug("Extracted primary channel from DS : %d",
-			  primary_channel);
-		goto update_beacon;
-	}
-
-	/* For HT, VHT and non-6GHz HE, get channel from HTINFO IE */
-	extracted_ie = (uint8_t *)
-		wlan_get_ie_ptr_from_eid(WLAN_ELEMID_HTINFO_ANA,
-					 ie_ptr, ie_len);
-	if (extracted_ie && extracted_ie[0] == WLAN_ELEMID_HTINFO_ANA &&
-	    extracted_ie[1] == sizeof(struct wlan_ie_htinfo_cmn)) {
-		band = BIT(REG_BAND_2G) | BIT(REG_BAND_5G);
-		primary_channel =
-			((struct wlan_ie_htinfo *)extracted_ie)->
-						hi_ie.hi_ctrlchannel;
-		sme_debug("Extracted primary channel from HT INFO : %d",
-			  primary_channel);
-		goto update_beacon;
-	}
-
-	/* For 6GHz, get channel from HE OP IE */
-	extracted_ie = (uint8_t *)
-		wlan_get_ext_ie_ptr_from_ext_id(WLAN_HEOP_OUI_TYPE,
-						(uint8_t)
-						WLAN_HEOP_OUI_SIZE,
-						ie_ptr, ie_len);
-
-	if (extracted_ie &&
-	    !qdf_mem_cmp(&extracted_ie[2], WLAN_HEOP_OUI_TYPE,
-			 WLAN_HEOP_OUI_SIZE) &&
-	     extracted_ie[1] <= WLAN_MAX_HEOP_IE_LEN) {
-		band = BIT(REG_BAND_6G);
-		primary_channel = util_scan_get_6g_oper_channel(extracted_ie);
-		sme_debug("Extracted primary channel from HE OP : %d",
-			  primary_channel);
-		if (primary_channel)
-			goto update_beacon;
-	}
-
-	mlme_err("Primary channel was not found in the candidate scan entry");
-	return QDF_STATUS_E_FAILURE;
-
-update_beacon:
-	op_freq = wlan_reg_chan_band_to_freq(mac_ctx->pdev,
-					     primary_channel, band);
-	sme_debug("Roaming candidate frequency : %d", op_freq);
-	csr_inform_bcn_probe(mac_ctx, frame, len, op_freq);
-	return QDF_STATUS_SUCCESS;
 }
 #endif
 

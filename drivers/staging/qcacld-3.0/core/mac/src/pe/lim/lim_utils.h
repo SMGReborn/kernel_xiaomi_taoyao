@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -104,12 +104,6 @@ typedef enum {
 
 #define MAX_WAIT_FOR_BCN_TX_COMPLETE 4000
 #define MAX_WAKELOCK_FOR_CSA         5000
-
-#ifdef WLAN_FEATURE_11BE
-#define MAX_NUM_PWR_LEVELS 16
-#else
-#define MAX_NUM_PWR_LEVELS 8
-#endif
 
 #ifdef WLAN_FEATURE_11W
 typedef union uPmfSaQueryTimerId {
@@ -1081,6 +1075,7 @@ static inline void lim_deactivate_and_change_timer_host_roam(
 {}
 #endif
 
+bool lim_is_robust_mgmt_action_frame(uint8_t action_category);
 uint8_t lim_compute_ext_cap_ie_length(tDot11fIEExtCap *ext_cap);
 
 void lim_update_caps_info_for_bss(struct mac_context *mac_ctx,
@@ -1687,15 +1682,13 @@ QDF_STATUS lim_util_get_type_subtype(void *pkt, uint8_t *type,
 /**
  * lim_get_min_session_txrate() - Get the minimum rate supported in the session
  * @session: Pointer to PE session
- * @pre_auth_freq: Pointer to pre_auth_freq
  *
  * This API will find the minimum rate supported by the given PE session and
  * return the enum rateid corresponding to the rate.
  *
  * Return: enum rateid
  */
-enum rateid lim_get_min_session_txrate(struct pe_session *session,
-				       qdf_freq_t *pre_auth_freq);
+enum rateid lim_get_min_session_txrate(struct pe_session *session);
 
 /**
  * lim_send_dfs_chan_sw_ie_update() - updates the channel switch IE in beacon

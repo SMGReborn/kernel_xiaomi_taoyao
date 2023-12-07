@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2013-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -2611,72 +2611,6 @@ int wma_roam_stats_event_handler(WMA_HANDLE handle, uint8_t *event,
 err:
 	return -EINVAL;
 }
-
-int wma_roam_candidate_frame_event_handler(void *handle, uint8_t *event,
-					   uint32_t len)
-{
-	tp_wma_handle wma = (tp_wma_handle) handle;
-	WMI_ROAM_FRAME_EVENTID_param_tlvs *param_buf = NULL;
-	wmi_roam_frame_event_fixed_param *frame_params = NULL;
-	struct roam_scan_candidate_frame *data;
-	struct mac_context *mac_ctx;
-	QDF_STATUS status;
-
-	if (!event || !len) {
-		wma_err("Empty roam candidate frame event");
-		return QDF_STATUS_E_FAILURE;
-	}
-
-	param_buf = (WMI_ROAM_FRAME_EVENTID_param_tlvs *)event;
-	if (!param_buf) {
-		wma_err("Received null buf from target");
-		return -EINVAL;
-	}
-
-	frame_params =
-		(wmi_roam_frame_event_fixed_param *)param_buf->fixed_param;
-
-	if (!wma_is_vdev_valid(frame_params->vdev_id)) {
-		wma_err("Invalid vdev id %d", frame_params->vdev_id);
-		return QDF_STATUS_E_FAILURE;
-	}
-
-	if (frame_params->frame_length > param_buf->num_frame) {
-		wma_err("Invalid frame length %d expected : %d",
-			frame_params->frame_length,
-			param_buf->num_frame);
-		return QDF_STATUS_E_FAILURE;
-	}
-
-	if (!param_buf->frame) {
-		wmi_err("Frame pointer is Null");
-		return QDF_STATUS_E_FAILURE;
-	}
-
-	mac_ctx = cds_get_context(QDF_MODULE_ID_PE);
-
-	if (!mac_ctx) {
-		wma_err("NULL mac ptr");
-		QDF_ASSERT(0);
-		return -EINVAL;
-	}
-
-	data = qdf_mem_malloc(sizeof(*data));
-
-	if (!data)
-		return -ENOMEM;
-
-	data->vdev_id = frame_params->vdev_id;
-	data->frame_length = frame_params->frame_length;
-	data->frame = (uint8_t *)param_buf->frame;
-
-	status = wma->csr_roam_candidate_event_cb(mac_ctx, data->frame,
-							 data->frame_length);
-	qdf_mem_free(data);
-
-	return QDF_STATUS_SUCCESS;
-}
-
 #endif
 
 /**
@@ -3564,7 +3498,7 @@ int wma_extscan_hotlist_match_event_handler(void *handle,
 		return -ENOMEM;
 
 	dest_ap = &dest_hotlist->ap[0];
-	dest_hotlist->numOfAps = numap;
+	dest_hotlist->numOfAps = event->total_entries;
 	dest_hotlist->requestId = event->config_request_id;
 
 	if (event->first_entry_index +
@@ -3730,7 +3664,6 @@ static int wma_group_num_bss_to_scan_id(const u_int8_t *cmd_param_info,
 	struct extscan_cached_scan_results *t_cached_result;
 	struct extscan_cached_scan_result *t_scan_id_grp;
 	int i, j;
-	uint32_t total_scan_num_results = 0;
 	tSirWifiScanResult *ap;
 
 	param_buf = (WMI_EXTSCAN_CACHED_RESULTS_EVENTID_param_tlvs *)
@@ -3741,19 +3674,16 @@ static int wma_group_num_bss_to_scan_id(const u_int8_t *cmd_param_info,
 	t_cached_result = cached_result;
 	t_scan_id_grp = &t_cached_result->result[0];
 
-	for (i = 0; i < t_cached_result->num_scan_ids; i++) {
-		total_scan_num_results += t_scan_id_grp->num_results;
-		t_scan_id_grp++;
-	}
-
-	if (total_scan_num_results > param_buf->num_bssid_list) {
-		wma_err("total_scan_num_results %d, num_bssid_list %d",
-			total_scan_num_results,
-			param_buf->num_bssid_list);
+	if ((t_cached_result->num_scan_ids *
+	     QDF_MIN(t_scan_id_grp->num_results,
+		     param_buf->num_bssid_list)) > param_buf->num_bssid_list) {
+		wma_err("num_scan_ids %d, num_results %d num_bssid_list %d",
+			 t_cached_result->num_scan_ids,
+			 t_scan_id_grp->num_results,
+			 param_buf->num_bssid_list);
 		return -EINVAL;
 	}
 
-	t_scan_id_grp = &t_cached_result->result[0];
 	wma_debug("num_scan_ids:%d",
 			t_cached_result->num_scan_ids);
 	for (i = 0; i < t_cached_result->num_scan_ids; i++) {
@@ -3764,7 +3694,8 @@ static int wma_group_num_bss_to_scan_id(const u_int8_t *cmd_param_info,
 			return -ENOMEM;
 
 		ap = &t_scan_id_grp->ap[0];
-		for (j = 0; j < t_scan_id_grp->num_results; j++) {
+		for (j = 0; j < QDF_MIN(t_scan_id_grp->num_results,
+					param_buf->num_bssid_list); j++) {
 			ap->channel = src_hotlist->channel;
 			ap->ts = WMA_MSEC_TO_USEC(src_rssi->tstamp);
 			ap->rtt = src_hotlist->rtt;
@@ -4726,8 +4657,6 @@ int wma_roam_event_callback(WMA_HANDLE handle, uint8_t *event_buf,
 			  QDF_MAC_ADDR_REF(bssid.bytes));
 		wma_handle_hw_mode_transition(wma_handle, param_buf);
 		wma_roam_ho_fail_handler(wma_handle, wmi_event->vdev_id, bssid);
-		wma_handle->interfaces[wmi_event->vdev_id].roaming_in_progress
-									= false;
 		lim_sae_auth_cleanup_retry(wma_handle->mac_context,
 					   wmi_event->vdev_id);
 		break;
