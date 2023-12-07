@@ -1325,6 +1325,8 @@ source "drivers/input/touchscreen/xiaomi/Kconfig"
 
 source "drivers/input/touchscreen/gt9897t/Kconfig"
 
+source "drivers/input/touchscreen/gt9916/Kconfig"
+
 config TOUCHSCREEN_SYNAPTICS_DSX
 	bool "Synaptics DSX Touchscreen Driver"
 	depends on I2C
